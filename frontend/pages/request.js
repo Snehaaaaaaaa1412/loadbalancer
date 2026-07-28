@@ -1,108 +1,136 @@
-import { useState, useEffect } from 'react';
+import React, { useState, useEffect } from 'react';
+import Head from 'next/head';
 import { useRouter } from 'next/router';
+import ServerNode from '../components/ServerNode';
+import { sendRequest } from '../utils/api';
 
 export default function RequestPage() {
-    const router = useRouter();
-    const { algorithm, numServers } = router.query;
-    const [serverRequests, setServerRequests] = useState([]);
-    const [requestId, setRequestId] = useState(1);
-    const [isLoading, setIsLoading] = useState(false);
+  const router = useRouter();
+  const { algorithm, numServers, weights } = router.query;
+  const [serverRequests, setServerRequests] = useState([]);
+  const [requestId, setRequestId] = useState(1);
+  const [isLoading, setIsLoading] = useState(false);
+  const [errorMessage, setErrorMessage] = useState('');
+  const [parsedWeights, setParsedWeights] = useState([]);
 
-    useEffect(() => {
-        if (numServers) {
-            setServerRequests(Array.from({ length: parseInt(numServers, 10) }, () => []));
+  // Parse weights from query parameters
+  useEffect(() => {
+    if (weights) {
+      const arr = weights.split(',').map(w => parseInt(w, 10) || 1);
+      setParsedWeights(arr);
+    }
+  }, [weights]);
+
+  // Sync request logs arrays sizes with numServers count
+  useEffect(() => {
+    if (numServers) {
+      const count = parseInt(numServers, 10);
+      setServerRequests(Array.from({ length: count }, () => []));
+    }
+  }, [numServers]);
+
+  const handleSendRequest = async () => {
+    if (isLoading) return;
+    setIsLoading(true);
+    setErrorMessage('');
+
+    try {
+      // Trigger api route request
+      const serverId = await sendRequest(algorithm);
+
+      if (serverId === -1) {
+        setErrorMessage('Request rejected: Load balancer reports all servers are at full capacity.');
+        setIsLoading(false);
+        return;
+      }
+
+      const activeId = parseInt(serverId, 10);
+      const reqLabel = `Request #${requestId}`;
+
+      // Append request to corresponding server node's queue
+      setServerRequests((prev) => {
+        const nextState = [...prev];
+        if (activeId > 0 && activeId <= nextState.length) {
+          nextState[activeId - 1] = [...(nextState[activeId - 1] || []), reqLabel];
         }
-    }, [numServers]);
+        return nextState;
+      });
 
-    const handleSendRequest = async () => {
-        if (isLoading) return; // Prevent multiple requests
-        setIsLoading(true);
+      // Simulated connection delay cleanup after 5000ms
+      setTimeout(() => {
+        setServerRequests((prev) => {
+          const nextState = [...prev];
+          if (activeId > 0 && activeId <= nextState.length) {
+            nextState[activeId - 1] = nextState[activeId - 1].filter(req => req !== reqLabel);
+          }
+          return nextState;
+        });
+      }, 5000);
 
-        const url = `http://localhost:8080/api/loadbalancer/request/${algorithm}`;
-        try {
-            const response = await fetch(url, { method: 'POST' });
+      setRequestId((prev) => prev + 1);
+    } catch (err) {
+      console.error(err);
+      setErrorMessage(err.message || 'Network error encountered during request routing.');
+    } finally {
+      setIsLoading(false);
+    }
+  };
 
-            if (response.ok) {
-                const serverId = await response.json();
-                if (serverId == -1) {
-                    return;
-                }
-                console.log(`Request handled by server: ${serverId}`);
+  const handleGoBack = () => {
+    router.push('/');
+  };
 
-                setServerRequests((prevRequests) => {
-                    const updatedRequests = [...prevRequests];
-                    if (serverId > 0 && serverId <= updatedRequests.length) {
-                        updatedRequests[serverId - 1] = [
-                            ...(updatedRequests[serverId - 1] || []), // Ensure it's an array
-                            `Request ${requestId}`
-                        ];
-                    } else {
-                        console.error(`Invalid serverId: ${serverId}`);
-                    }
-                    return updatedRequests;
-                });
+  return (
+    <div className="min-h-screen bg-purple-50 flex flex-col items-center justify-start p-6">
+      <Head>
+        <title>Load Balancer Dispatch Dashboard</title>
+      </Head>
 
-                setTimeout(() => {
-                    setServerRequests((prevRequests) => {
-                        const updatedRequests = [...prevRequests];
-                        if (serverId > 0 && serverId <= updatedRequests.length) {
-                            updatedRequests[serverId - 1] = updatedRequests[serverId - 1].slice(1);
-                        } else {
-                            console.error(`Invalid serverId: ${serverId}`);
-                        }
-                        return updatedRequests;
-                    });
-                }, 5000);
+      <h1 className="text-5xl font-extrabold mb-4 text-purple-800 text-center">Gateway Dashboard</h1>
 
-                setRequestId((prevId) => prevId + 1);
-            } else {
-                const errorData = await response.text();
-                console.error(`Error sending request: ${errorData}`);
-            }
-        } catch (error) {
-            console.error('Error:', error);
-        } finally {
-            setIsLoading(false); // Reset loading state
-        }
-    };
+      <div className="mb-6 bg-white p-4 rounded-lg shadow text-center border border-gray-200">
+        <span className="text-gray-600 block text-sm font-semibold uppercase tracking-wider">Active Strategy</span>
+        <span className="text-2xl font-bold text-purple-700 capitalize">{algorithm?.replace(/-/g, ' ')}</span>
+        <span className="text-gray-500 block text-xs mt-1">Servers configured: {numServers}</span>
+      </div>
 
-    const handleGoBack = () => {
-        router.push('/');
-    };
-
-    return (
-        <div className="min-h-screen bg-purple-50 flex flex-col items-center justify-center p-6">
-            <h1 className="text-5xl font-extrabold mb-8 text-purple-700 text-center">Request Visualization</h1>
-
-            <div className="mb-6 text-lg text-gray-700 text-center">
-                <p><strong>Algorithm:</strong> {algorithm}</p>
-                <p><strong>Number of Servers:</strong> {numServers}</p>
-            </div>
-
-            <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-6 mb-8 w-full px-4">
-                {serverRequests.map((requests, index) => (
-                    <div key={index} className="flex flex-col items-center justify-start p-6 bg-purple-300 text-white rounded-lg shadow-md w-full max-w-xs">
-                        <div className="text-4xl mb-4">🖥️</div>
-                        <span className="text-xl font-semibold">Server {index + 1}</span>
-                        <ul className="mt-4 text-sm text-purple-900 h-40 w-full p-2 bg-purple-100 rounded overflow-y-auto scrollbar-thin scrollbar-thumb-purple-300">
-                            {requests.map((request, reqIndex) => (
-                                <li key={reqIndex} className="bg-purple-200 rounded px-2 py-1 mb-1 w-full text-center">{request}</li>
-                            ))}
-                        </ul>
-
-                    </div>
-                ))}
-            </div>
-
-            <div className="flex flex-wrap justify-center space-x-4">
-                <button onClick={handleSendRequest} className="px-8 py-4 bg-purple-600 text-white rounded-md hover:bg-purple-700 transition duration-300">
-                    Send Request
-                </button>
-
-                <button onClick={handleGoBack} className="px-8 py-4 bg-gray-500 text-white rounded-md hover:bg-gray-700 transition duration-300">
-                    Back
-                </button>
-            </div>
+      {errorMessage && (
+        <div className="mb-6 p-4 bg-red-100 border-l-4 border-red-500 text-red-700 rounded shadow w-full max-w-4xl">
+          <p className="font-bold">Error Routing Request</p>
+          <p>{errorMessage}</p>
         </div>
-    );
+      )}
+
+      {/* Grid rendering Server Nodes */}
+      <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-6 mb-8 w-full px-4 justify-items-center">
+        {serverRequests.map((requests, index) => (
+          <ServerNode
+            key={index}
+            id={index + 1}
+            requests={requests}
+            weight={parsedWeights[index]}
+            algorithm={algorithm}
+          />
+        ))}
+      </div>
+
+      {/* Control Actions buttons */}
+      <div className="flex space-x-4">
+        <button 
+          onClick={handleSendRequest} 
+          disabled={isLoading}
+          className="px-8 py-4 bg-purple-600 text-white font-bold rounded-lg hover:bg-purple-700 focus:ring-4 focus:ring-purple-300 transition duration-200 disabled:bg-purple-400"
+        >
+          {isLoading ? 'Routing...' : 'Send Request'}
+        </button>
+
+        <button 
+          onClick={handleGoBack} 
+          className="px-8 py-4 bg-gray-500 text-white font-bold rounded-lg hover:bg-gray-600 focus:ring-4 focus:ring-gray-300 transition duration-200"
+        >
+          Back to Portal
+        </button>
+      </div>
+    </div>
+  );
 }

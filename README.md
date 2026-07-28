@@ -1,118 +1,188 @@
-# Load-Balancer-Visulization
-Load Balancer Visulization
+# Production-Grade Layer-7 Load Balancer & Reverse Proxy Gateway
 
-This project demonstrates various load balancing algorithms through backend simulations and an interactive frontend visualization. The goal is to help students and developers understand how load balancing techniques work in a system design context.
-
----
-
-## Introduction
-Load balancing is a critical concept in system design for distributing client requests or network traffic across multiple servers. It prevents any single server from being overloaded, thereby improving system performance and reliability.
-
-
-With this project, you can simulate and visualize four common load balancing algorithms:
-1. **Round Robin Algorithm**
-2. **Weighted Round Robin Algorithm**
-3. **Least Connections Algorithm**
-
-## Demo & Algorithms Implemented
-
-## 🎥 Demo
-
-Check out the key screens of the Load Balancer Visualization project in action! 🚀
+A high-performance, developer-friendly **Layer-7 (L7) Application Load Balancer and Reverse Proxy Gateway** built using **Node.js, Express, and TypeScript**. Engineered with clean architecture separation between the **Data Plane** and **Control Plane**, matching the production design principles of Envoy Proxy, NGINX, and HAProxy.
 
 ---
 
-### 🏠 Home Page
-The landing page where users can select different load balancing algorithms to visualize.
+## 🚀 Key Architectural Highlights
 
-![Home](./Load_balance_images/home.png)
+### ⚡ 1. Control Plane / Data Plane Separation
+* **Data Plane (Hot Request Path)**: 100% in-memory operations. Decisions are computed in $< 0.05\text{ms}$ with **zero** external database or Redis requests, ensuring sub-millisecond proxy routing.
+* **Control Plane (Administration & Sync)**: Asynchronous, out-of-band updates using **Redis Pub/Sub** and monotonic configuration versioning. Fails open to standalone local memory mode if Redis is offline.
 
----
+### 🛡️ 2. Dynamic Copy-on-Write Snapshots & Draining States
+* Config reloads construct new, immutable `ServerCluster` snapshots and execute **atomic pointer swaps**.
+* Existing `Server` instance references are reused to preserve active connection count metrics and event timers.
+* Discarded backend nodes enter a `DRAINING` lifecycle state. They receive no new traffic and are safely garbage-collected only after their active connection count drops to `0`.
 
-### ⚙️ Initialization Screen
-Configure your simulation:
-- Set the number of servers.
-- Define server weights (for Weighted Round Robin).
-- Enter client requests.
-
-![Init](./Load_balance_images/init.png)
-
----
-
-### 🔄 Round Robin Algorithm Visualization
-Requests are evenly distributed across all servers in a round-robin fashion.
-
-![Round Robin](./Load_balance_images/RR.png)
+### 🔄 3. Monotonic Version Reconciliation
+* Eventual consistency gaps (e.g. missed Pub/Sub updates due to network drops) are self-healed by validating version offsets.
+* If a version gap is detected (`incomingVersion > localVersion + 1`), gateways run a randomized pull reconciliation loop, fetching the config from Redis with thundering herd jitter mitigation.
 
 ---
 
-### ⚖️ Weighted Round Robin Algorithm Visualization
-Servers with higher weights handle a proportionally larger number of requests.
+## 📊 System Architecture
 
-![Weighted Round Robin](./Load_balance_images/WRR.png)
+### Request Routing Data Flow (Data Plane)
+```text
+[ Client Request ]
+       │ (HTTP GET /api/loadbalancer/route/round-robin/users)
+       ▼
+┌──────────────┐
+│ Express Port │ ──> [ L7 Stream Proxy (proxy.ts) ]
+└──────────────┘               │
+                               ▼
+                    [ Select Active Node ] 
+              (In-Memory O(1) Algorithm Strategy)
+                               │
+               ┌───────────────┼───────────────┐
+               ▼                               ▼
+       ┌──────────────┐                 ┌──────────────┐
+       │ Backend 8081 │                 │ Backend 8082 │
+       └──────────────┘                 └──────────────┘
+```
+
+### Config Update Propagation (Control Plane)
+```text
+[ Admin Console / Script ] 
+       │ 1. Updates Server Configurations
+       ▼
+┌───────────────────────┐
+│ Redis Configurations  │ <── (Hash Key: lb:cluster:default:configs)
+└───────────────────────┘
+       │ 2. Publishes Version Increments
+       ▼
+┌───────────────────────┐
+│ Redis Pub/Sub Channel │
+└───────────────────────┘
+       │ 
+       ▼ (Asynchronous Broadcast)
+┌───────────────────────┐
+│ Gateway Node (Sub)    │ ──> [ Version Check ]
+└───────────────────────┘           │
+                                    ├──> (Sequential)  ──> Swaps Snapshot Pointer
+                                    └──> (Version Gap) ──> Jitters & Pulls from Redis
+```
 
 ---
 
-### 📉 Least Connections Algorithm Visualization
-Requests are assigned to the server with the fewest active connections in real-time.
+## 🛠️ Supported Load Balancing Algorithms
 
-![Least Connection](./Load_balance_images/leastConnection.png)
-
----
-
-## Features
-- Customizable number of servers and weights for weighted algorithms.
--  Interactive visualizations for each algorithm.
-- Real-time representation of request distribution.
-- Web-based visualization (Next.js).
+1. **Round Robin**: Routes traffic sequentially across all available healthy backend servers.
+2. **Least Connections**: Dynamically selects the node with the lowest active connection count.
+3. **Smooth Weighted Round Robin (SWRR)**: Implements NGINX's stateful weighted distribution algorithm, ensuring smooth load dispersion without clustering on high-weight nodes.
 
 ---
 
-## Tech Stack
-### Backend:
-- Java (Core logic and simulations)
-- Spring Boot (for serving API endpoints)
+## 📑 API Reference Contracts
 
-### Frontend:
-- Next.js (for interactive visualization)
-- Tailwind CSS (for modern UI components)
+### 1. Initialize Routing Strategy Configuration
+Configure active backend servers and weight distributions.
+* **Endpoint**: `POST /api/loadbalancer/initialize/:strategy/:noOfServers`
+* **Request Body** (Optional weights mapping):
+  ```json
+  {
+    "weights": [5, 2, 3]
+  }
+  ```
+* **Response**:
+  ```json
+  {
+    "message": "Strategy 'round-robin' initialized successfully."
+  }
+  ```
 
-### Tools:
-- Git (Version control)
+### 2. Simulate Backend Selection Request
+Simulates client request distribution yielding target server assignment.
+* **Endpoint**: `POST /api/loadbalancer/request/:strategy`
+* **Response**:
+  ```json
+  {
+    "serverId": 1,
+    "target": "http://localhost:8081",
+    "activeConnections": 1
+  }
+  ```
 
-## Getting Started
+### 3. Retrieve Cluster State Listing
+* **Endpoint**: `GET /api/loadbalancer/servers/:strategy`
+* **Response**:
+  ```json
+  [
+    { "id": 1, "url": "http://localhost:8081", "weight": 5, "activeConnections": 1, "isHealthy": true },
+    { "id": 2, "url": "http://localhost:8082", "weight": 2, "activeConnections": 0, "isHealthy": true }
+  ]
+  ```
 
-### Prerequisites
-- Java Development Kit (JDK) 8 or higher
-- [Maven](https://maven.apache.org/) (optional, for managing dependencies)
-- A code editor like eclipse IDE for Java Developers or IntelliJ IDEA or Visual Studio Code
-- Node.js & npm
+### 4. L7 Reverse Proxy Routing Gateway
+Forward HTTP client payload streams to active backend nodes.
+* **Endpoint**: `ALL /api/loadbalancer/route/:strategy/*`
+* **Details**: Strips the gateway route prefix and pipes request headers/body directly to resolved backend targets. Translates targets' offline statuses to `502 Bad Gateway` and timeouts to `504 Gateway Timeout`.
 
-### Installation
-1. Clone the repository:
+---
+
+## 💻 Installation & Running Guide
+
+### Running with Docker Compose (Recommended)
+Launch the gateway, a local Next.js client dashboard, and a Redis container with one command:
+```bash
+docker-compose up --build
+```
+* **Gateway Endpoint**: `http://localhost:8080`
+* **Client Visualizer Dashboard**: `http://localhost:3000`
+
+---
+
+### Manual Standalone Local Mode (Without Redis/Docker)
+The gateway is configured to run in standalone memory mode by default.
+
+1. **Install Dependencies**:
    ```bash
-      git clone https://github.com/Dishatimbadiya/LoadBalancerVisulization.git
+   # Build the backend
+   cd backend
+   npm install
+   npm run build
+   
+   # Build the frontend
+   cd ../frontend
+   npm install
    ```
 
-2. Open the project in eclipse IDE.
+2. **Set Configuration Presets**:
+   Create a `.env` file in the `backend/` folder:
+   ```env
+   PORT=8080
+   NODE_ENV=development
+   USE_REDIS=false
+   ```
 
-3. Run the main class.
+3. **Start Services**:
+   ```bash
+   # Run Gateway (backend folder)
+   npm start
+   
+   # Run Client (frontend folder)
+   npm run dev
+   ```
 
-4. Frontend Setup:
+4. **Verify Telemetry Execution (Integration Tests)**:
+   You can verify snapshot operations, pointer swapping, and connections draining by running the programmatic integration test suite:
+   ```bash
+   cd backend
+   npx ts-node src/tests/integration.test.ts
+   ```
 
-    ```bash 
-    cd frontend
-    npm install
-    npm run dev
-    ```
-5. Open your browser and go to http://localhost:3000 to view the visualization.
+---
 
-### Contributing
+## 🛡️ Graceful Shutdown Lifecycle
+Upon receiving termination interrupts (`SIGTERM` or `SIGINT`):
+1. The gateway disables incoming TCP request loops (`server.close()`).
+2. Sockets draining occurs for in-flight client requests.
+3. Active subscriber listeners are cleanly unsubscribed (`ConfigSubscriber.unsubscribe()`).
+4. Downstream Redis client connections are gracefully disconnected (`RedisClient.shutdown()`).
+5. Process exits cleanly.
 
-Contributions are welcome! To contribute:
+---
 
-1. Fork the repository.
-2. Create a feature branch (git checkout -b feature-name).
-3. Commit your changes (git commit -m "Add new feature").
-4. Push to the branch (git push origin feature-name).
-5. Open a Pull Request.
+## ⚖️ License
+Licensed under the [MIT License](LICENSE).
