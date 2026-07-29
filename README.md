@@ -4,6 +4,14 @@ A high-performance, developer-friendly **Layer-7 (L7) Application Load Balancer 
 
 ---
 
+## 🌐 Live Production Demo
+Explore the fully deployed load balancing gateway system live in your browser:
+* **Frontend Visualizer Dashboard (Vercel)**: [https://loadbalancer-hfu7.vercel.app](https://loadbalancer-hfu7.vercel.app)
+* **Backend Gateway API (Render)**: [https://loadbalancer-backend.onrender.com](https://loadbalancer-backend.onrender.com)
+* **API Health Check Endpoint**: [https://loadbalancer-backend.onrender.com/health](https://loadbalancer-backend.onrender.com/health)
+
+---
+
 ## 🚀 Key Architectural Highlights
 
 ### ⚡ 1. Control Plane / Data Plane Separation
